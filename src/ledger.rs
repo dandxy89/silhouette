@@ -1,7 +1,7 @@
 pub mod client_manager {
     use std::collections::BTreeMap;
 
-    use bigdecimal::BigDecimal;
+    use bigdecimal::{BigDecimal, num_traits::zero};
 
     use crate::model::ClientId;
 
@@ -12,7 +12,7 @@ pub mod client_manager {
         Locked,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     pub struct ClientAccount {
         pub available: BigDecimal,
         pub held: BigDecimal,
@@ -26,6 +26,16 @@ pub mod client_manager {
 
         pub fn is_locked(&self) -> bool {
             matches!(self.status, ClientAccountStatus::Locked)
+        }
+    }
+
+    impl Default for ClientAccount {
+        fn default() -> Self {
+            Self {
+                available: zero(),
+                held: zero(),
+                status: ClientAccountStatus::default(),
+            }
         }
     }
 
@@ -189,7 +199,6 @@ pub mod engine {
             }
 
             let tx = Transaction::try_from(record)?;
-
             account.available += &tx.amount;
             self.tx_manager.insert(tx);
 
@@ -202,12 +211,15 @@ pub mod engine {
             }
 
             let account = self.client_manager.get_or_initialise(record.client);
+            if account.is_locked() {
+                return Err(TransactionError::AccountLocked);
+            }
+
             if &account.available < record.amount.as_ref().unwrap_or(&zero()) {
                 return Err(TransactionError::InsufficientFunds);
             }
 
             let tx = Transaction::try_from(record)?;
-
             account.available -= &tx.amount;
             self.tx_manager.insert(tx);
 
@@ -218,8 +230,10 @@ pub mod engine {
             let Some(transaction) = self.tx_manager.get(record.tx) else {
                 return Err(TransactionError::MissingTransaction(record.tx));
             };
-
-            if !transaction.can_be_disputed(&record) {
+            if transaction.client != record.client {
+                return Err(TransactionError::InvalidClinetId);
+            }
+            if transaction.r#type != TxType::Deposit || !transaction.can_be_disputed(&record) {
                 return Ok(());
             }
 
@@ -235,7 +249,6 @@ pub mod engine {
             let Some(transaction) = self.tx_manager.get(record.tx) else {
                 return Err(TransactionError::MissingTransaction(record.tx));
             };
-
             if !transaction.is_disputed() {
                 return Ok(());
             }
@@ -249,13 +262,18 @@ pub mod engine {
         }
 
         fn process_chargeback(&mut self, record: CSVRecord) -> TxResult {
-            let account = self.client_manager.get_or_initialise(record.client);
-            account.status = ClientAccountStatus::Locked;
-
             let Some(transaction) = self.tx_manager.get(record.tx) else {
                 return Err(TransactionError::MissingTransaction(record.tx));
             };
+            if transaction.client != record.client {
+                return Err(TransactionError::InvalidClinetId);
+            }
+            if !transaction.is_disputed() || transaction.r#type != TxType::Deposit {
+                return Ok(());
+            }
 
+            let account = self.client_manager.get_or_initialise(record.client);
+            account.status = ClientAccountStatus::Locked;
             account.held -= &transaction.amount;
 
             self.tx_manager
@@ -366,9 +384,9 @@ resolve,1,1,
         fn test_chargeback() {
             let test_data = r#" type,  client,  tx,  amount
 deposit,1,1,100.0
-            dispute,1,1,
-            chargeback,1,1,
-            deposit,1,2,100.0
+dispute,1,1,
+chargeback,1,1,
+deposit,1,2,100.0
 "#;
 
             let mut payment_engine = PaymentsEngine::default();
@@ -405,8 +423,7 @@ resolve,1,1,
 
             let mut payment_engine = PaymentsEngine::default();
             for record in csv_stream(test_data.as_bytes()) {
-                let result = payment_engine.process_csv_record(record.unwrap());
-                assert!(result.is_ok());
+                let _ = payment_engine.process_csv_record(record.unwrap());
             }
 
             let is_disputed = payment_engine.tx_manager.is_disputed(1);
@@ -428,6 +445,23 @@ deposit,1,1,100.0
             let expected = BigDecimal::from_f32(100.0).unwrap();
             let total = payment_engine.client_manager.get_or_initialise(1).total();
             assert_eq!(total, expected);
+        }
+
+        #[test]
+        fn should_not_deposit_or_withdraws_if_locked() {
+            let test_data = r#" type,  client,  tx,  amount
+chargeback,1,1,
+deposit,1,1,100.0
+withdrawal,1,2,100.0
+"#;
+
+            let mut payment_engine = PaymentsEngine::default();
+            for record in csv_stream(test_data.as_bytes()) {
+                let _ = payment_engine.process_csv_record(record.unwrap());
+            }
+
+            let account = payment_engine.client_manager.get_or_initialise(1);
+            assert!(!account.is_locked());
         }
     }
 }

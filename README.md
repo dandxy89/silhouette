@@ -1,9 +1,5 @@
 # Sumnmary
 
-## Completeness
-
-- Not handled Disputable Withdrawals - would need to be added
-
 ## Testing
 
 - Could be more comprehensive - multiple disputed transactions

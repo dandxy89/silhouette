@@ -6,6 +6,8 @@ pub type TxResult = Result<(), TransactionError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TransactionError {
+    #[error("client ID is invalid")]
+    InvalidClinetId,
     #[error("account has insufficient funds")]
     InsufficientFunds,
     #[error("account locked")]
@@ -34,6 +36,7 @@ pub enum TransactionStatus {
 pub struct Transaction {
     pub tx: TxId,
     pub client: ClientId,
+    pub r#type: TxType,
     pub amount: BigDecimal,
     pub status: TransactionStatus,
 }
@@ -67,6 +70,7 @@ impl TryFrom<CSVRecord> for Transaction {
                     client: value.client,
                     amount,
                     status: TransactionStatus::Processed,
+                    r#type: value.r#type,
                 }),
                 None => Err(TransactionError::MissingAmount),
             },

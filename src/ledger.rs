@@ -1,4 +1,4 @@
-mod client_manager {
+pub mod client_manager {
     use std::collections::BTreeMap;
 
     use bigdecimal::BigDecimal;
@@ -31,7 +31,7 @@ mod client_manager {
 
     #[derive(Default)]
     pub struct ClientAccountManager {
-        accounts: BTreeMap<ClientId, ClientAccount>,
+        pub(crate) accounts: BTreeMap<ClientId, ClientAccount>,
     }
 
     impl ClientAccountManager {

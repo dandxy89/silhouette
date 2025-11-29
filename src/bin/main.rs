@@ -1,7 +1,9 @@
 use std::io::{BufReader, Write};
 use std::{fs::File, io};
 
-use silhouette::{file_reader::csv_stream, ledger::engine::PaymentsEngine};
+use silhouette::{
+    file_reader::csv_stream, ledger::engine::PaymentsEngine, output::write_accounts_to_stdout,
+};
 
 fn main() -> Result<(), csv::Error> {
     let file_path = std::env::args().nth(1).expect("No file_path was provided");
@@ -27,5 +29,5 @@ fn main() -> Result<(), csv::Error> {
         }
     }
 
-    Ok(())
+    write_accounts_to_stdout(&payment_engine.client_manager)
 }

@@ -1,3 +1,37 @@
+use crate::model::{TxId, TxType};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionError {
+    MissingAmount,
+    InvalidAmount,
+    NotStorable(TxType),
+    MissingTransaction(TxId),
+    AccountLocked,
+    InsufficientFunds,
+}
+
+impl std::fmt::Display for TransactionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsufficientFunds => write!(f, "account has InsufficientFunds"),
+            Self::AccountLocked => write!(f, "account locked"),
+            Self::MissingAmount => write!(f, "missing amount"),
+            Self::InvalidAmount => write!(f, "invalid amount"),
+            Self::NotStorable(kind) => {
+                write!(f, "{kind:?} is not a storable transaction")
+            }
+            Self::MissingTransaction(tx) => {
+                write!(
+                    f,
+                    "Attempted operation on TxId={tx} was not possible as no existing record exists"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for TransactionError {}
+
 pub mod client_manager {
     use std::collections::BTreeMap;
 
@@ -14,14 +48,18 @@ pub mod client_manager {
 
     #[derive(Debug, Default)]
     pub struct ClientAccount {
-        pub avaliable: BigDecimal,
+        pub available: BigDecimal,
         pub held: BigDecimal,
-        pub state: ClientAccountStatus,
+        pub status: ClientAccountStatus,
     }
 
     impl ClientAccount {
         pub fn total(&self) -> BigDecimal {
-            &self.avaliable + &self.held
+            &self.available + &self.held
+        }
+
+        pub fn is_locked(&self) -> bool {
+            matches!(self.status, ClientAccountStatus::Locked)
         }
     }
 
@@ -34,6 +72,11 @@ pub mod client_manager {
         pub fn get_or_initialise(&mut self, client: ClientId) -> &mut ClientAccount {
             // A2: If Client doesn't exist simply add a Default record
             self.accounts.entry(client).or_default()
+        }
+
+        #[cfg(test)]
+        pub fn client_count(&self) -> usize {
+            self.accounts.len()
         }
     }
 
@@ -50,9 +93,9 @@ pub mod client_manager {
 
             let account_state = manager.get_or_initialise(test_client);
 
-            assert_eq!(account_state.avaliable, zero());
+            assert_eq!(account_state.available, zero());
             assert_eq!(account_state.held, zero());
-            assert_eq!(account_state.state, ClientAccountStatus::Active);
+            assert_eq!(account_state.status, ClientAccountStatus::Active);
             assert_eq!(account_state.total(), zero());
         }
     }
@@ -63,35 +106,10 @@ pub mod tx_manager {
 
     use bigdecimal::{BigDecimal, num_traits::zero};
 
-    use crate::model::{CSVRecord, TxId, TxType};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum TransactionError {
-        MissingAmount,
-        InvalidAmount,
-        NotStorable(TxType),
-        MissingTransatcion(TxId),
-    }
-
-    impl std::fmt::Display for TransactionError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::MissingAmount => write!(f, "missing amount"),
-                Self::InvalidAmount => write!(f, "invalid amount"),
-                Self::NotStorable(kind) => {
-                    write!(f, "{kind:?} is not a storable transaction")
-                }
-                Self::MissingTransatcion(tx) => {
-                    write!(
-                        f,
-                        "Attempted operation on TxId={tx} was not possible as no existing record exists"
-                    )
-                }
-            }
-        }
-    }
-
-    impl std::error::Error for TransactionError {}
+    use crate::{
+        ledger::TransactionError,
+        model::{CSVRecord, TxId, TxType},
+    };
 
     #[derive(Debug, PartialEq, Eq)]
     pub enum TransactionStatus {
@@ -132,10 +150,13 @@ pub mod tx_manager {
     }
 
     impl TxManager {
-        pub fn store(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
-            let storable = Transaction::try_from(record)?;
-            self.transactions.entry(storable.tx).or_insert(storable);
-            Ok(())
+        pub fn store(&mut self, transaction: Transaction) -> &Transaction {
+            let transaction = self
+                .transactions
+                .entry(transaction.tx)
+                .or_insert(transaction);
+
+            &*transaction
         }
 
         pub fn exists(&self, tx: TxId) -> bool {
@@ -157,17 +178,25 @@ pub mod tx_manager {
                 e.get_mut().status = status;
                 Ok(())
             } else {
-                Err(TransactionError::MissingTransatcion(tx))
+                Err(TransactionError::MissingTransaction(tx))
             }
+        }
+
+        #[cfg(test)]
+        pub fn tx_count(&self) -> usize {
+            self.transactions.len()
         }
     }
 
     #[cfg(test)]
     mod test {
-        use bigdecimal::{BigDecimal, FromPrimitive};
+        use bigdecimal::{BigDecimal, FromPrimitive as _};
 
         use crate::{
-            ledger::tx_manager::{TransactionError, TransactionStatus, TxManager},
+            ledger::{
+                TransactionError,
+                tx_manager::{Transaction, TransactionStatus, TxManager},
+            },
             model::{CSVRecord, TxType},
         };
 
@@ -181,7 +210,8 @@ pub mod tx_manager {
                 tx: 1,
                 amount: BigDecimal::from_f32(1.1),
             };
-            assert!(manager.store(valid_record).is_ok());
+            let valid_record = Transaction::try_from(valid_record).unwrap();
+            manager.store(valid_record);
 
             manager.set_status(1, TransactionStatus::Disputed).unwrap();
             assert!(manager.is_disputed(1));
@@ -192,10 +222,102 @@ pub mod tx_manager {
                 tx: 2,
                 amount: None,
             };
-            match manager.store(invalid_record) {
-                Err(TransactionError::MissingAmount) => (),
-                _ => panic!("Incorrect Error status"),
+
+            let tx = Transaction::try_from(invalid_record);
+            assert!(matches!(tx, Err(TransactionError::MissingAmount)));
+        }
+    }
+}
+
+pub mod engine {
+    use bigdecimal::num_traits::zero;
+
+    use crate::{
+        ledger::{
+            TransactionError,
+            client_manager::ClientAccountManager,
+            tx_manager::{Transaction, TxManager},
+        },
+        model::{CSVRecord, TxType},
+    };
+
+    #[derive(Default)]
+    pub struct PaymentsEngine {
+        pub client_manager: ClientAccountManager,
+        pub tx_manager: TxManager,
+    }
+
+    impl PaymentsEngine {
+        fn process_deposit(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            let account = self.client_manager.get_or_initialise(record.client);
+            if account.is_locked() {
+                return Err(TransactionError::AccountLocked);
             }
+
+            let tx = Transaction::try_from(record)?;
+
+            account.available += &tx.amount;
+            self.tx_manager.store(tx);
+
+            Ok(())
+        }
+
+        fn process_withdrawal(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            let account = self.client_manager.get_or_initialise(record.client);
+            if &account.available < record.amount.as_ref().unwrap_or(&zero()) {
+                return Err(TransactionError::InsufficientFunds);
+            }
+
+            let tx = Transaction::try_from(record)?;
+
+            account.available -= &tx.amount;
+            self.tx_manager.store(tx);
+
+            Ok(())
+        }
+
+        pub fn process_csv_record(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            match record.r#type {
+                TxType::Deposit => self.process_deposit(record),
+                TxType::Withdrawal => self.process_withdrawal(record),
+                TxType::Dispute => todo!(),
+                TxType::Resolve => todo!(),
+                TxType::Chargeback => todo!(),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use bigdecimal::{BigDecimal, FromPrimitive as _};
+
+        use crate::{
+            ledger::engine::PaymentsEngine,
+            model::{CSVRecord, TxType},
+        };
+
+        #[test]
+        fn test_deposits_and_withdrawls() {
+            let mut payment_engine = PaymentsEngine::default();
+
+            let valid_deposit = CSVRecord {
+                r#type: TxType::Deposit,
+                client: 1,
+                tx: 1,
+                amount: BigDecimal::from_f32(1.1),
+            };
+            let valid_withdraw = CSVRecord {
+                r#type: TxType::Withdrawal,
+                client: 1,
+                tx: 2,
+                amount: BigDecimal::from_f32(1.1),
+            };
+
+            payment_engine.process_csv_record(valid_deposit).unwrap();
+            payment_engine.process_csv_record(valid_withdraw).unwrap();
+
+            assert_eq!(2, payment_engine.tx_manager.tx_count());
+            assert_eq!(1, payment_engine.client_manager.client_count());
         }
     }
 }

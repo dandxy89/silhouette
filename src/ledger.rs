@@ -108,7 +108,7 @@ pub mod tx_manager {
 
     use crate::{
         ledger::TransactionError,
-        model::{CSVRecord, TxId, TxType},
+        model::{CSVRecord, ClientId, TxId, TxType},
     };
 
     #[derive(Debug, PartialEq, Eq)]
@@ -121,8 +121,26 @@ pub mod tx_manager {
 
     pub struct Transaction {
         pub tx: TxId,
+        pub client: ClientId,
         pub amount: BigDecimal,
         pub status: TransactionStatus,
+    }
+
+    impl Transaction {
+        pub fn can_be_disputed(&self, record: &CSVRecord) -> bool {
+            if self.client != record.client {
+                return false;
+            }
+
+            matches!(
+                self.status,
+                TransactionStatus::Processed | TransactionStatus::Resolved
+            )
+        }
+
+        pub fn is_disputed(&self) -> bool {
+            matches!(self.status, TransactionStatus::Disputed)
+        }
     }
 
     impl TryFrom<CSVRecord> for Transaction {
@@ -134,6 +152,7 @@ pub mod tx_manager {
                     Some(amount) if amount < zero() => Err(TransactionError::InvalidAmount),
                     Some(amount) => Ok(Transaction {
                         tx: value.tx,
+                        client: value.client,
                         amount,
                         status: TransactionStatus::Processed,
                     }),
@@ -159,14 +178,8 @@ pub mod tx_manager {
             &*transaction
         }
 
-        pub fn exists(&self, tx: TxId) -> bool {
-            self.transactions.contains_key(&tx)
-        }
-
-        pub fn is_disputed(&self, tx: TxId) -> bool {
-            self.transactions
-                .get(&tx)
-                .is_some_and(|tx| tx.status == TransactionStatus::Disputed)
+        pub fn get(&self, tx: TxId) -> Option<&Transaction> {
+            self.transactions.get(&tx)
         }
 
         pub fn set_status(
@@ -180,6 +193,13 @@ pub mod tx_manager {
             } else {
                 Err(TransactionError::MissingTransaction(tx))
             }
+        }
+
+        #[cfg(test)]
+        pub fn is_disputed(&self, tx: TxId) -> bool {
+            self.transactions
+                .get(&tx)
+                .is_some_and(|tx| tx.status == TransactionStatus::Disputed)
         }
 
         #[cfg(test)]
@@ -235,8 +255,8 @@ pub mod engine {
     use crate::{
         ledger::{
             TransactionError,
-            client_manager::ClientAccountManager,
-            tx_manager::{Transaction, TxManager},
+            client_manager::{ClientAccountManager, ClientAccountStatus},
+            tx_manager::{Transaction, TransactionStatus, TxManager},
         },
         model::{CSVRecord, TxType},
     };
@@ -276,13 +296,64 @@ pub mod engine {
             Ok(())
         }
 
+        fn process_dispute(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            let Some(transaction) = self.tx_manager.get(record.tx) else {
+                return Err(TransactionError::MissingTransaction(record.tx));
+            };
+
+            if !transaction.can_be_disputed(&record) {
+                return Ok(());
+            }
+
+            let account = self.client_manager.get_or_initialise(record.client);
+
+            account.available -= &transaction.amount;
+            account.held += &transaction.amount;
+
+            self.tx_manager
+                .set_status(transaction.tx, TransactionStatus::Disputed)
+        }
+
+        fn process_resolve(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            let Some(transaction) = self.tx_manager.get(record.tx) else {
+                return Err(TransactionError::MissingTransaction(record.tx));
+            };
+
+            if !transaction.is_disputed() {
+                return Ok(());
+            }
+
+            let account = self.client_manager.get_or_initialise(record.client);
+
+            account.available += &transaction.amount;
+            account.held -= &transaction.amount;
+
+            self.tx_manager
+                .set_status(transaction.tx, TransactionStatus::Resolved)
+        }
+
+        fn process_chargeback(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+            let account = self.client_manager.get_or_initialise(record.client);
+
+            account.status = ClientAccountStatus::Locked;
+
+            let Some(transaction) = self.tx_manager.get(record.tx) else {
+                return Err(TransactionError::MissingTransaction(record.tx));
+            };
+
+            account.held -= &transaction.amount;
+
+            self.tx_manager
+                .set_status(transaction.tx, TransactionStatus::Chargedback)
+        }
+
         pub fn process_csv_record(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
             match record.r#type {
                 TxType::Deposit => self.process_deposit(record),
                 TxType::Withdrawal => self.process_withdrawal(record),
-                TxType::Dispute => todo!(),
-                TxType::Resolve => todo!(),
-                TxType::Chargeback => todo!(),
+                TxType::Dispute => self.process_dispute(record),
+                TxType::Resolve => self.process_resolve(record),
+                TxType::Chargeback => self.process_chargeback(record),
             }
         }
     }

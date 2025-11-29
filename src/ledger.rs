@@ -324,6 +324,7 @@ pub mod engine {
 
             assert_eq!(2, payment_engine.tx_manager.tx_count());
             assert_eq!(1, payment_engine.client_manager.client_count());
+            assert_eq!(payment_engine.tx_manager.tx_count(), 2);
         }
 
         #[test]
@@ -345,6 +346,7 @@ withdrawal,  1,  2,  200.0
             let expected = BigDecimal::from_f32(100.0).unwrap();
             let total = payment_engine.client_manager.get_or_initialise(1).total();
             assert_eq!(total, expected);
+            assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
 
         #[test]
@@ -378,6 +380,7 @@ resolve,1,1,
             let expected = BigDecimal::from_f32(100.0).unwrap();
             let total = payment_engine.client_manager.get_or_initialise(1).total();
             assert_eq!(total, expected);
+            assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
 
         #[test]
@@ -411,6 +414,8 @@ deposit,1,2,100.0
 
             let total = account.total();
             assert_eq!(total, zero());
+
+            assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
 
         #[test]
@@ -428,6 +433,7 @@ resolve,1,1,
 
             let is_disputed = payment_engine.tx_manager.is_disputed(1);
             assert!(!is_disputed);
+            assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
 
         #[test]
@@ -445,6 +451,7 @@ deposit,1,1,100.0
             let expected = BigDecimal::from_f32(100.0).unwrap();
             let total = payment_engine.client_manager.get_or_initialise(1).total();
             assert_eq!(total, expected);
+            assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
 
         #[test]
@@ -462,6 +469,7 @@ withdrawal,1,2,100.0
 
             let account = payment_engine.client_manager.get_or_initialise(1);
             assert!(!account.is_locked());
+            assert_eq!(payment_engine.tx_manager.tx_count(), 2);
         }
     }
 }

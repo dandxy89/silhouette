@@ -13,3 +13,4 @@ path = "src/bin/main.rs"
 bigdecimal = { version = "0.4.9", features = ["serde-json"] }
 csv = "1.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.17"

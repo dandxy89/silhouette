@@ -1,38 +1,4 @@
-use crate::model::{TxId, TxType};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransactionError {
-    MissingAmount,
-    InvalidAmount,
-    NotStorable(TxType),
-    MissingTransaction(TxId),
-    AccountLocked,
-    InsufficientFunds,
-}
-
-impl std::fmt::Display for TransactionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InsufficientFunds => write!(f, "account has InsufficientFunds"),
-            Self::AccountLocked => write!(f, "account locked"),
-            Self::MissingAmount => write!(f, "missing amount"),
-            Self::InvalidAmount => write!(f, "invalid amount"),
-            Self::NotStorable(kind) => {
-                write!(f, "{kind:?} is not a storable transaction")
-            }
-            Self::MissingTransaction(tx) => {
-                write!(
-                    f,
-                    "Attempted operation on TxId={tx} was not possible as no existing record exists"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for TransactionError {}
-
-pub mod client_manager {
+mod client_manager {
     use std::collections::BTreeMap;
 
     use bigdecimal::BigDecimal;
@@ -101,67 +67,13 @@ pub mod client_manager {
     }
 }
 
-pub mod tx_manager {
+mod tx_manager {
     use std::collections::{BTreeMap, btree_map::Entry};
 
-    use bigdecimal::{BigDecimal, num_traits::zero};
-
     use crate::{
-        ledger::TransactionError,
-        model::{CSVRecord, ClientId, TxId, TxType},
+        model::TxId,
+        transaction::{Transaction, TransactionError, TransactionStatus, TxResult},
     };
-
-    #[derive(Debug, PartialEq, Eq)]
-    pub enum TransactionStatus {
-        Processed,
-        Disputed,
-        Resolved,
-        Chargedback,
-    }
-
-    pub struct Transaction {
-        pub tx: TxId,
-        pub client: ClientId,
-        pub amount: BigDecimal,
-        pub status: TransactionStatus,
-    }
-
-    impl Transaction {
-        pub fn can_be_disputed(&self, record: &CSVRecord) -> bool {
-            if self.client != record.client {
-                return false;
-            }
-
-            matches!(
-                self.status,
-                TransactionStatus::Processed | TransactionStatus::Resolved
-            )
-        }
-
-        pub fn is_disputed(&self) -> bool {
-            matches!(self.status, TransactionStatus::Disputed)
-        }
-    }
-
-    impl TryFrom<CSVRecord> for Transaction {
-        type Error = TransactionError;
-
-        fn try_from(value: CSVRecord) -> Result<Self, Self::Error> {
-            match value.r#type {
-                TxType::Deposit | TxType::Withdrawal => match value.amount {
-                    Some(amount) if amount < zero() => Err(TransactionError::InvalidAmount),
-                    Some(amount) => Ok(Transaction {
-                        tx: value.tx,
-                        client: value.client,
-                        amount,
-                        status: TransactionStatus::Processed,
-                    }),
-                    None => Err(TransactionError::MissingAmount),
-                },
-                _ => Err(TransactionError::NotStorable(value.r#type)),
-            }
-        }
-    }
 
     #[derive(Default)]
     pub struct TxManager {
@@ -182,11 +94,7 @@ pub mod tx_manager {
             self.transactions.get(&tx)
         }
 
-        pub fn set_status(
-            &mut self,
-            tx: TxId,
-            status: TransactionStatus,
-        ) -> Result<(), TransactionError> {
+        pub fn set_status(&mut self, tx: TxId, status: TransactionStatus) -> TxResult {
             if let Entry::Occupied(mut e) = self.transactions.entry(tx) {
                 e.get_mut().status = status;
                 Ok(())
@@ -213,11 +121,9 @@ pub mod tx_manager {
         use bigdecimal::{BigDecimal, FromPrimitive as _};
 
         use crate::{
-            ledger::{
-                TransactionError,
-                tx_manager::{Transaction, TransactionStatus, TxManager},
-            },
+            ledger::tx_manager::{Transaction, TransactionStatus, TxManager},
             model::{CSVRecord, TxType},
+            transaction::TransactionError,
         };
 
         #[test]
@@ -254,11 +160,11 @@ pub mod engine {
 
     use crate::{
         ledger::{
-            TransactionError,
             client_manager::{ClientAccountManager, ClientAccountStatus},
-            tx_manager::{Transaction, TransactionStatus, TxManager},
+            tx_manager::TxManager,
         },
         model::{CSVRecord, TxType},
+        transaction::{Transaction, TransactionError, TransactionStatus, TxResult},
     };
 
     #[derive(Default)]
@@ -268,7 +174,7 @@ pub mod engine {
     }
 
     impl PaymentsEngine {
-        fn process_deposit(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        fn process_deposit(&mut self, record: CSVRecord) -> TxResult {
             let account = self.client_manager.get_or_initialise(record.client);
             if account.is_locked() {
                 return Err(TransactionError::AccountLocked);
@@ -282,7 +188,7 @@ pub mod engine {
             Ok(())
         }
 
-        fn process_withdrawal(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        fn process_withdrawal(&mut self, record: CSVRecord) -> TxResult {
             let account = self.client_manager.get_or_initialise(record.client);
             if &account.available < record.amount.as_ref().unwrap_or(&zero()) {
                 return Err(TransactionError::InsufficientFunds);
@@ -296,7 +202,7 @@ pub mod engine {
             Ok(())
         }
 
-        fn process_dispute(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        fn process_dispute(&mut self, record: CSVRecord) -> TxResult {
             let Some(transaction) = self.tx_manager.get(record.tx) else {
                 return Err(TransactionError::MissingTransaction(record.tx));
             };
@@ -314,7 +220,7 @@ pub mod engine {
                 .set_status(transaction.tx, TransactionStatus::Disputed)
         }
 
-        fn process_resolve(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        fn process_resolve(&mut self, record: CSVRecord) -> TxResult {
             let Some(transaction) = self.tx_manager.get(record.tx) else {
                 return Err(TransactionError::MissingTransaction(record.tx));
             };
@@ -332,7 +238,7 @@ pub mod engine {
                 .set_status(transaction.tx, TransactionStatus::Resolved)
         }
 
-        fn process_chargeback(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        fn process_chargeback(&mut self, record: CSVRecord) -> TxResult {
             let account = self.client_manager.get_or_initialise(record.client);
 
             account.status = ClientAccountStatus::Locked;
@@ -347,7 +253,7 @@ pub mod engine {
                 .set_status(transaction.tx, TransactionStatus::Chargedback)
         }
 
-        pub fn process_csv_record(&mut self, record: CSVRecord) -> Result<(), TransactionError> {
+        pub fn process_csv_record(&mut self, record: CSVRecord) -> TxResult {
             match record.r#type {
                 TxType::Deposit => self.process_deposit(record),
                 TxType::Withdrawal => self.process_withdrawal(record),
@@ -360,11 +266,13 @@ pub mod engine {
 
     #[cfg(test)]
     mod test {
-        use bigdecimal::{BigDecimal, FromPrimitive as _};
+        use bigdecimal::{BigDecimal, FromPrimitive as _, num_traits::zero};
 
         use crate::{
+            file_reader::csv_stream,
             ledger::engine::PaymentsEngine,
             model::{CSVRecord, TxType},
+            transaction::TransactionError,
         };
 
         #[test]
@@ -389,6 +297,111 @@ pub mod engine {
 
             assert_eq!(2, payment_engine.tx_manager.tx_count());
             assert_eq!(1, payment_engine.client_manager.client_count());
+        }
+
+        #[test]
+        fn test_withdrawal_with_insufficient_funds() {
+            let test_data = r#" type,  client,  tx,  amount
+deposit,  1,  1,  100.0
+withdrawal,  1,  2,  200.0
+"#;
+            let mut payment_engine = PaymentsEngine::default();
+            for (idx, record) in csv_stream(test_data.as_bytes()).enumerate() {
+                let record = record.unwrap();
+
+                let result = payment_engine.process_csv_record(record);
+                if idx == 1 {
+                    assert!(matches!(result, Err(TransactionError::InsufficientFunds)));
+                }
+            }
+
+            let expected = BigDecimal::from_f32(100.0).unwrap();
+            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            assert_eq!(total, expected);
+        }
+
+        #[test]
+        fn test_resolve_dsputed_transaction() {
+            let test_data = r#" type,  client,  tx,  amount
+deposit,1,1,100.0
+dispute,1,1,
+dispute,1,1,
+resolve,1,1,
+dispute,1,2,
+dispute,1,1,
+resolve,1,1,
+resolve,1,1,
+"#;
+
+            let mut payment_engine = PaymentsEngine::default();
+            for (idx, record) in csv_stream(test_data.as_bytes()).enumerate() {
+                let result = payment_engine.process_csv_record(record.unwrap());
+
+                if idx == 4 {
+                    assert!(result.is_err());
+                    assert!(matches!(
+                        result.unwrap_err(),
+                        TransactionError::MissingTransaction(_)
+                    ))
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
+
+            let expected = BigDecimal::from_f32(100.0).unwrap();
+            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            assert_eq!(total, expected);
+        }
+
+        #[test]
+        fn test_chargeback() {
+            let test_data = r#" type,  client,  tx,  amount
+deposit,1,1,100.0
+            dispute,1,1,
+            chargeback,1,1,
+            deposit,1,2,100.0
+"#;
+
+            let mut payment_engine = PaymentsEngine::default();
+            for (idx, record) in csv_stream(test_data.as_bytes()).enumerate() {
+                let result = payment_engine.process_csv_record(record.unwrap());
+
+                if idx == 3 {
+                    assert!(result.is_err());
+                    assert!(matches!(
+                        result.unwrap_err(),
+                        TransactionError::AccountLocked
+                    ))
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
+
+            let account = payment_engine.client_manager.get_or_initialise(1);
+
+            let is_locked = account.is_locked();
+            assert!(is_locked);
+
+            let total = account.total();
+            assert_eq!(total, zero());
+        }
+
+        #[test]
+        fn test_non_matching_client_ids() {
+            let test_data = r#" type,  client,  tx,  amount
+deposit,1,1,100.0
+dispute,2,1,
+resolve,1,1,
+"#;
+
+            let mut payment_engine = PaymentsEngine::default();
+            for record in csv_stream(test_data.as_bytes()) {
+                let result = payment_engine.process_csv_record(record.unwrap());
+                assert!(result.is_ok());
+            }
+
+            let is_disputed = payment_engine.tx_manager.is_disputed(1);
+            assert!(!is_disputed);
         }
     }
 }

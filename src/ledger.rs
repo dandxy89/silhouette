@@ -81,13 +81,17 @@ mod tx_manager {
     }
 
     impl TxManager {
-        pub fn store(&mut self, transaction: Transaction) -> &Transaction {
+        pub fn insert(&mut self, transaction: Transaction) -> &Transaction {
             let transaction = self
                 .transactions
                 .entry(transaction.tx)
                 .or_insert(transaction);
 
             &*transaction
+        }
+
+        pub fn exists(&self, tx: TxId) -> bool {
+            self.transactions.contains_key(&tx)
         }
 
         pub fn get(&self, tx: TxId) -> Option<&Transaction> {
@@ -137,7 +141,7 @@ mod tx_manager {
                 amount: BigDecimal::from_f32(1.1),
             };
             let valid_record = Transaction::try_from(valid_record).unwrap();
-            manager.store(valid_record);
+            manager.insert(valid_record);
 
             manager.set_status(1, TransactionStatus::Disputed).unwrap();
             assert!(manager.is_disputed(1));
@@ -175,6 +179,10 @@ pub mod engine {
 
     impl PaymentsEngine {
         fn process_deposit(&mut self, record: CSVRecord) -> TxResult {
+            if self.tx_manager.exists(record.tx) {
+                return Err(TransactionError::DuplicateTransactionId(record.tx));
+            }
+
             let account = self.client_manager.get_or_initialise(record.client);
             if account.is_locked() {
                 return Err(TransactionError::AccountLocked);
@@ -183,12 +191,16 @@ pub mod engine {
             let tx = Transaction::try_from(record)?;
 
             account.available += &tx.amount;
-            self.tx_manager.store(tx);
+            self.tx_manager.insert(tx);
 
             Ok(())
         }
 
         fn process_withdrawal(&mut self, record: CSVRecord) -> TxResult {
+            if self.tx_manager.exists(record.tx) {
+                return Err(TransactionError::DuplicateTransactionId(record.tx));
+            }
+
             let account = self.client_manager.get_or_initialise(record.client);
             if &account.available < record.amount.as_ref().unwrap_or(&zero()) {
                 return Err(TransactionError::InsufficientFunds);
@@ -197,7 +209,7 @@ pub mod engine {
             let tx = Transaction::try_from(record)?;
 
             account.available -= &tx.amount;
-            self.tx_manager.store(tx);
+            self.tx_manager.insert(tx);
 
             Ok(())
         }
@@ -212,7 +224,6 @@ pub mod engine {
             }
 
             let account = self.client_manager.get_or_initialise(record.client);
-
             account.available -= &transaction.amount;
             account.held += &transaction.amount;
 
@@ -230,7 +241,6 @@ pub mod engine {
             }
 
             let account = self.client_manager.get_or_initialise(record.client);
-
             account.available += &transaction.amount;
             account.held -= &transaction.amount;
 
@@ -240,7 +250,6 @@ pub mod engine {
 
         fn process_chargeback(&mut self, record: CSVRecord) -> TxResult {
             let account = self.client_manager.get_or_initialise(record.client);
-
             account.status = ClientAccountStatus::Locked;
 
             let Some(transaction) = self.tx_manager.get(record.tx) else {
@@ -402,6 +411,23 @@ resolve,1,1,
 
             let is_disputed = payment_engine.tx_manager.is_disputed(1);
             assert!(!is_disputed);
+        }
+
+        #[test]
+        fn should_not_allow_duplicate_transactions() {
+            let test_data = r#" type,  client,  tx,  amount
+deposit,1,1,100.0
+deposit,1,1,100.0
+"#;
+
+            let mut payment_engine = PaymentsEngine::default();
+            for record in csv_stream(test_data.as_bytes()) {
+                let _ = payment_engine.process_csv_record(record.unwrap());
+            }
+
+            let expected = BigDecimal::from_f32(100.0).unwrap();
+            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            assert_eq!(total, expected);
         }
     }
 }

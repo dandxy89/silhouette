@@ -18,6 +18,8 @@ pub enum TransactionError {
     NotStorable(TxType),
     #[error("attempted operation on TxId={0} was not possible as no existing record exists")]
     MissingTransaction(TxId),
+    #[error("duplicate transaction")]
+    DuplicateTransactionId(TxId),
 }
 
 #[derive(Debug, PartialEq, Eq)]

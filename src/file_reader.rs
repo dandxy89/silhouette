@@ -13,7 +13,7 @@ pub fn csv_stream<R: io::Read>(buffer: R) -> impl Iterator<Item = Result<CSVReco
 
 #[cfg(test)]
 mod tests {
-    use crate::model::TxType;
+    use crate::model::{ClientId, TxId, TxType};
 
     #[test]
     fn trimming_test() {
@@ -25,8 +25,8 @@ deposit,  1,  1,  100.0
 
         let record = reader.next().unwrap().unwrap();
         assert_eq!(record.r#type, TxType::Deposit);
-        assert_eq!(record.client, 1);
-        assert_eq!(record.tx, 1);
+        assert_eq!(record.client, ClientId::from(1));
+        assert_eq!(record.tx, TxId::from(1));
         assert!(record.amount.is_some());
     }
 }

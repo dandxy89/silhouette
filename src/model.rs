@@ -1,8 +1,51 @@
-use bigdecimal::{BigDecimal, RoundingMode};
-use serde::{Deserialize, Deserializer, de::Error};
+use std::fmt;
 
-pub type ClientId = u16; // A1
-pub type TxId = u32;
+use bigdecimal::{BigDecimal, RoundingMode};
+use serde::{Deserialize, Deserializer, Serialize, de::Error};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClientId(pub u16);
+
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u16> for ClientId {
+    fn from(value: u16) -> Self {
+        ClientId(value)
+    }
+}
+
+impl From<ClientId> for u16 {
+    fn from(value: ClientId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TxId(pub u32);
+
+impl fmt::Display for TxId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u32> for TxId {
+    fn from(value: u32) -> Self {
+        TxId(value)
+    }
+}
+
+impl From<TxId> for u32 {
+    fn from(value: TxId) -> Self {
+        value.0
+    }
+}
 
 #[derive(Clone, serde::Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

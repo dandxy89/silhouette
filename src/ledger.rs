@@ -65,9 +65,8 @@ pub mod client_manager {
         #[test]
         fn test_get_or_initialise() {
             let mut manager = ClientAccountManager::default();
-            let test_client = 1;
 
-            let account_state = manager.get_or_initialise(test_client);
+            let account_state = manager.get_or_initialise(1.into());
 
             assert_eq!(account_state.available, zero());
             assert_eq!(account_state.held, zero());
@@ -146,20 +145,22 @@ mod tx_manager {
 
             let valid_record = CSVRecord {
                 r#type: TxType::Deposit,
-                client: 1,
-                tx: 1,
+                client: 1.into(),
+                tx: 1.into(),
                 amount: BigDecimal::from_f32(1.1),
             };
             let valid_record = Transaction::try_from(valid_record).unwrap();
             manager.insert(valid_record);
 
-            manager.set_status(1, TransactionStatus::Disputed).unwrap();
-            assert!(manager.is_disputed(1));
+            manager
+                .set_status(1.into(), TransactionStatus::Disputed)
+                .unwrap();
+            assert!(manager.is_disputed(1.into()));
 
             let invalid_record = CSVRecord {
                 r#type: TxType::Deposit,
-                client: 1,
-                tx: 2,
+                client: 1.into(),
+                tx: 2.into(),
                 amount: None,
             };
 
@@ -308,14 +309,14 @@ pub mod engine {
 
             let valid_deposit = CSVRecord {
                 r#type: TxType::Deposit,
-                client: 1,
-                tx: 1,
+                client: 1.into(),
+                tx: 1.into(),
                 amount: BigDecimal::from_f32(1.1),
             };
             let valid_withdraw = CSVRecord {
                 r#type: TxType::Withdrawal,
-                client: 1,
-                tx: 2,
+                client: 1.into(),
+                tx: 2.into(),
                 amount: BigDecimal::from_f32(1.1),
             };
 
@@ -344,7 +345,10 @@ withdrawal,  1,  2,  200.0
             }
 
             let expected = BigDecimal::from_f32(100.0).unwrap();
-            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            let total = payment_engine
+                .client_manager
+                .get_or_initialise(1.into())
+                .total();
             assert_eq!(total, expected);
             assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
@@ -378,7 +382,10 @@ resolve,1,1,
             }
 
             let expected = BigDecimal::from_f32(100.0).unwrap();
-            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            let total = payment_engine
+                .client_manager
+                .get_or_initialise(1.into())
+                .total();
             assert_eq!(total, expected);
             assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
@@ -407,7 +414,7 @@ deposit,1,2,100.0
                 }
             }
 
-            let account = payment_engine.client_manager.get_or_initialise(1);
+            let account = payment_engine.client_manager.get_or_initialise(1.into());
 
             let is_locked = account.is_locked();
             assert!(is_locked);
@@ -431,7 +438,7 @@ resolve,1,1,
                 let _ = payment_engine.process_csv_record(record.unwrap());
             }
 
-            let is_disputed = payment_engine.tx_manager.is_disputed(1);
+            let is_disputed = payment_engine.tx_manager.is_disputed(1.into());
             assert!(!is_disputed);
             assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
@@ -449,7 +456,10 @@ deposit,1,1,100.0
             }
 
             let expected = BigDecimal::from_f32(100.0).unwrap();
-            let total = payment_engine.client_manager.get_or_initialise(1).total();
+            let total = payment_engine
+                .client_manager
+                .get_or_initialise(1.into())
+                .total();
             assert_eq!(total, expected);
             assert_eq!(payment_engine.tx_manager.tx_count(), 1);
         }
@@ -467,7 +477,7 @@ withdrawal,1,2,100.0
                 let _ = payment_engine.process_csv_record(record.unwrap());
             }
 
-            let account = payment_engine.client_manager.get_or_initialise(1);
+            let account = payment_engine.client_manager.get_or_initialise(1.into());
             assert!(!account.is_locked());
             assert_eq!(payment_engine.tx_manager.tx_count(), 2);
         }
